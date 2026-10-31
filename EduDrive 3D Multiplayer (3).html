@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>3D Multiplayer Racing</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Three.js (r128) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- OBJLoader -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"></script>
+    
+    <!-- fflate for ZIP extraction -->
+    <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.0/umd/index.js"></script>
+
+    <!-- PeerJS -->
+    <script src="https://unpkg.com/peerjs@1.4.7/dist/peerjs.min.js"></script>
+
+    <!-- NippleJS for Virtual Joystick -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.10.1/nipplejs.min.js"></script>
+
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #87CEEB; font-family: 'Inter', sans-serif; touch-action: none; user-select: none; }
+        #game-canvas { display: block; width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        .ui-layer { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 10; pointer-events: none; }
+        .pointer-events-auto { pointer-events: auto; }
+        
+        #joystick-zone {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            width: 150px;
+            height: 150px;
+            z-index: 20;
+            pointer-events: auto;
+        }
+
+        /* Show joystick only on touch screens typically, but left active for testing */
+        @media (min-width: 1024px) {
+            #joystick-zone { opacity: 0.5; } 
+        }
+
+        .hud-text { text-shadow: 2px 2px 4px rgba(0,0,0,0.8); }
+    </style>
+</head>
+<body>
+
+    <!-- Game Canvas -->
+    <canvas id="game-canvas"></canvas>
+
+    <!-- UI Overlay -->
+    <div id="ui-container" class="ui-layer flex items-center justify-center bg-gray-900 bg-opacity-85 transition-opacity duration-500 pointer-events-auto z-50">
+        
+        <!-- Start Menu -->
+        <div id="start-menu" class="bg-white rounded-3xl shadow-2xl p-8 max-w-md w-full mx-4">
+            <h1 class="text-4xl font-extrabold text-center text-gray-900 mb-2 tracking-tight">Pro Drive 3D</h1>
+            <p class="text-center text-gray-500 mb-6 font-medium">Multiplayer Zip & OBJ Loader</p>
+            
+            <div class="mb-6 bg-gray-50 p-4 rounded-xl border border-gray-100">
+                <label class="block text-sm font-bold text-gray-700 mb-2">Paint Job</label>
+                <div class="flex items-center space-x-4">
+                    <input type="color" id="car-color" value="#ff0000" class="h-12 w-24 rounded-lg cursor-pointer border-2 border-gray-300 shadow-sm">
+                    <span class="text-sm text-gray-500">Pick your custom color</span>
+                </div>
+            </div>
+
+            <div class="space-y-4">
+                <div>
+                    <button id="btn-create" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-4 rounded-xl transition duration-200 shadow-lg transform hover:scale-[1.02]">
+                        Host New Race
+                    </button>
+                </div>
+
+                <div class="relative flex items-center py-2">
+                    <div class="flex-grow border-t border-gray-200"></div>
+                    <span class="flex-shrink-0 mx-4 text-gray-400 text-sm font-medium">OR</span>
+                    <div class="flex-grow border-t border-gray-200"></div>
+                </div>
+
+                <div>
+                    <div class="flex space-x-2">
+                        <input type="text" id="join-code" placeholder="ROOM CODE" maxlength="3" class="flex-1 bg-gray-50 border-2 border-gray-300 text-gray-900 rounded-xl focus:ring-blue-500 focus:border-blue-500 block w-full p-4 text-center text-2xl tracking-widest uppercase font-bold">
+                        <button id="btn-join" class="bg-green-500 hover:bg-green-600 text-white font-bold py-4 px-6 rounded-xl transition duration-200 shadow-lg transform hover:scale-[1.02]">
+                            Join
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="connection-status" class="mt-6 text-center text-sm font-bold text-blue-500 hidden bg-blue-50 p-3 rounded-lg animate-pulse"></div>
+        </div>
+    </div>
+
+    <!-- HUD Layer -->
+    <div id="hud" class="hidden ui-layer pointer-events-none z-40">
+        <!-- Top Info Bar -->
+        <div class="absolute top-4 left-4 right-4 flex justify-between items-start">
+            
+            <!-- Speedometer & Gear -->
+            <div class="bg-black bg-opacity-40 backdrop-blur-md rounded-2xl p-4 border border-white border-opacity-20 text-white flex flex-col items-center min-w-[120px]">
+                <span class="text-xs text-gray-300 font-semibold tracking-wider uppercase mb-1">Speed</span>
+                <div class="flex items-baseline space-x-1">
+                    <span id="speed-display" class="text-4xl font-black hud-text">0</span>
+                    <span class="text-sm font-medium text-gray-300">KM/H</span>
+                </div>
+            </div>
+
+            <!-- Race Stats (Lap / Time / Room) -->
+            <div class="flex flex-col items-end space-y-2">
+                <div class="bg-black bg-opacity-40 backdrop-blur-md rounded-2xl p-4 border border-white border-opacity-20 text-white text-right min-w-[150px]">
+                    <div class="flex justify-between items-center mb-1">
+                        <span class="text-xs text-gray-300 font-semibold uppercase">Lap</span>
+                        <span id="lap-display" class="text-xl font-bold text-green-400">1 / 3</span>
+                    </div>
+                    <div class="flex justify-between items-center">
+                        <span class="text-xs text-gray-300 font-semibold uppercase">Time</span>
+                        <span id="time-display" class="text-xl font-mono font-bold">00:00.0</span>
+                    </div>
+                </div>
+                
+                <div class="bg-blue-600 bg-opacity-80 rounded-xl px-4 py-2 border border-blue-400 text-white text-sm font-bold shadow-lg pointer-events-auto">
+                    Room: <span id="display-room-code" class="tracking-widest">---</span>
+                </div>
+                <div id="player-count" class="text-xs text-white bg-black bg-opacity-30 px-3 py-1 rounded-full text-right">
+                    Players: 1
+                </div>
+            </div>
+        </div>
+
+        <!-- Lap Complete Notification -->
+        <div id="lap-notification" class="absolute top-1/4 left-1/2 transform -translate-x-1/2 -translate-y-1/2 text-5xl font-black text-yellow-400 italic hud-text opacity-0 transition-opacity duration-300">
+            LAP COMPLETE!
+        </div>
+
+        <!-- Virtual Joystick Area -->
+        <div id="joystick-zone"></div>
+        
+        <!-- Controls Hint (Desktop) -->
+        <div class="absolute bottom-6 left-1/2 transform -translate-x-1/2 text-center hidden md:block">
+            <p class="text-white text-sm mt-2 text-shadow drop-shadow-md bg-black bg-opacity-40 px-6 py-2 rounded-full backdrop-blur-sm border border-white border-opacity-10">
+                Use <strong class="text-blue-300">WASD</strong> or <strong class="text-blue-300">Arrow Keys</strong>. Touch joystick on mobile.
+            </p>
+        </div>
+    </div>
+
+    <script>
+        // =========================================================================
+        // Game State & Variables
+        // =========================================================================
+        let gameState = 'menu'; // menu, playing, finished
+        let myColor = '#ff0000';
+        
+        // Advanced Physics State
+        const carPhysics = {
+            velocity: 0,
+            heading: 0, // Rotation around Y axis
+            maxSpeed: 1.2, // Game units per frame
+            acceleration: 0.015,
+            braking: 0.03,
+            friction: 0.98, // Natural slowdown
+            drag: 0.99, // High speed drag
+            turnSpeed: 0.06,
+        };
+
+        // Inputs (Keyboard & Joystick mapped to -1 to 1)
+        let inputX = 0; // Steering (-1 left, 1 right)
+        let inputY = 0; // Throttle (-1 brake/reverse, 1 accel)
+        const keys = { w: false, a: false, s: false, d: false, ArrowUp: false, ArrowDown: false, ArrowLeft: false, ArrowRight: false };
+
+        // Racing System Logic
+        let currentLap = 1;
+        const totalLaps = 3;
+        let startTime = 0;
+        let timerInterval = null;
+        
+        // Track zones (simplified AABB collision for checkpoints)
+        let passedCheckpoint = false;
+        // Start/Finish Line bounds (approx mapped to 3D world)
+        const finishLineZ = 0;
+        const finishLineXMin = 50, finishLineXMax = 250; 
+        const checkpointXMin = -250, checkpointXMax = -50; 
+        let lastCarZ = 0; // To check crossing direction
+
+        // Multiplayer
+        let peer = null;
+        let myRoomId = null;
+        let connections = []; 
+        let remotePlayers = {}; 
+
+        // Model loading
+        let loadedBaseCarModel = null;
+        let myCar = null;
+
+        // =========================================================================
+        // Three.js Setup
+        // =========================================================================
+        const canvas = document.getElementById('game-canvas');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x5caee0); // Nice sky blue
+        scene.fog = new THREE.Fog(0x5caee0, 50, 350);
+
+        const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+        
+        const renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+        renderer.shadowMap.enabled = true;
+        renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+        // Lighting
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+        scene.add(ambientLight);
+
+        const dirLight = new THREE.DirectionalLight(0xfffaee, 1.2);
+        dirLight.position.set(100, 150, 50);
+        dirLight.castShadow = true;
+        dirLight.shadow.mapSize.width = 2048;
+        dirLight.shadow.mapSize.height = 2048;
+        dirLight.shadow.camera.near = 10;
+        dirLight.shadow.camera.far = 400;
+        const d = 200;
+        dirLight.shadow.camera.left = -d; dirLight.shadow.camera.right = d;
+        dirLight.shadow.camera.top = d; dirLight.shadow.camera.bottom = -d;
+        scene.add(dirLight);
+
+        // =========================================================================
+        // Environment: Procedural Race Track & Start/Finish Line
+        // =========================================================================
+        function buildEnvironment() {
+            // 1. The Ground/Grass
+            const groundGeo = new THREE.PlaneGeometry(1000, 1000);
+            const groundMat = new THREE.MeshStandardMaterial({ color: 0x3b8039, roughness: 1.0 });
+            const ground = new THREE.Mesh(groundGeo, groundMat);
+            ground.rotation.x = -Math.PI / 2;
+            ground.position.y = -0.05; // Slightly below road
+            ground.receiveShadow = true;
+            scene.add(ground);
+
+            // 2. The Procedural Road (Painted via Canvas Texture)
+            const trackCanvas = document.createElement('canvas');
+            trackCanvas.width = 2048; trackCanvas.height = 2048;
+            const ctx = trackCanvas.getContext('2d');
+            
+            // Transparent background for road layer
+            ctx.clearRect(0,0,2048,2048);
+
+            // Road drawing
+            ctx.strokeStyle = '#2b2b2b';
+            ctx.lineWidth = 140; // Road width
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.beginPath();
+            // Create an oval centered at 1024,1024
+            ctx.arc(1024 - 300, 1024, 300, Math.PI/2, Math.PI*1.5); // Left curve
+            ctx.lineTo(1024 + 300, 1024 - 300); // Top straight
+            ctx.arc(1024 + 300, 1024, 300, -Math.PI/2, Math.PI/2); // Right curve
+            ctx.closePath();
+            ctx.stroke();
+
+            // Center dashed line
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 6;
+            ctx.setLineDash([40, 40]);
+            ctx.stroke();
+
+            const trackTex = new THREE.CanvasTexture(trackCanvas);
+            trackTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+            
+            // Create the road plane exactly matching the ground bounds
+            const roadGeo = new THREE.PlaneGeometry(1000, 1000);
+            const roadMat = new THREE.MeshStandardMaterial({ 
+                map: trackTex, transparent: true, roughness: 0.8, metalness: 0.1
+            });
+            const road = new THREE.Mesh(roadGeo, roadMat);
+            road.rotation.x = -Math.PI / 2;
+            road.receiveShadow = true;
+            scene.add(road);
+
+            // 3. Start/Finish Line Mesh (Right Straightaway)
+            // In 1000x1000 space, center is 0,0. Right straight is approx X=146
+            const sfGeo = new THREE.PlaneGeometry(70, 20); // Width of road roughly
+            
+            // Checkerboard texture
+            const canvasCB = document.createElement('canvas');
+            canvasCB.width = 128; canvasCB.height = 64;
+            const ctxCB = canvasCB.getContext('2d');
+            ctxCB.fillStyle = 'white'; ctxCB.fillRect(0,0,128,64);
+            ctxCB.fillStyle = 'black';
+            for(let i=0; i<8; i++){
+                for(let j=0; j<4; j++){
+                    if ((i+j)%2 === 0) ctxCB.fillRect(i*16, j*16, 16, 16);
+                }
+            }
+            const cbTex = new THREE.CanvasTexture(canvasCB);
+            cbTex.wrapS = THREE.RepeatWrapping; cbTex.wrapT = THREE.RepeatWrapping;
+            cbTex.repeat.set(4, 2);
+
+            const sfMat = new THREE.MeshBasicMaterial({ map: cbTex });
+            const sfLine = new THREE.Mesh(sfGeo, sfMat);
+            sfLine.rotation.x = -Math.PI / 2;
+            sfLine.position.set(146, 0.01, 0); // X = 146 roughly matches right straight
+            scene.add(sfLine);
+            
+            // Add some scenery (Simple cones/trees)
+            const coneGeo = new THREE.ConeGeometry(1, 3, 16);
+            const coneMat = new THREE.MeshStandardMaterial({color: 0xff5500});
+            for(let i=0; i<10; i++) {
+                const cone = new THREE.Mesh(coneGeo, coneMat);
+                cone.position.set(110, 1.5, -200 + i*40);
+                cone.castShadow = true;
+                scene.add(cone);
+            }
+        }
+        buildEnvironment();
+
+        // =========================================================================
+        // Game Objects & Custom Model Loading
+        // =========================================================================
+        
+        // Fallback procedural car
+        function buildFallbackCar(colorHex) {
+            const group = new THREE.Group();
+            
+            const mat = new THREE.MeshStandardMaterial({ color: colorHex, roughness: 0.4, metalness: 0.2 });
+            const baseGeo = new THREE.BoxGeometry(2, 0.5, 4);
+            const base = new THREE.Mesh(baseGeo, mat);
+            base.position.y = 0.5;
+            base.castShadow = true;
+            group.add(base);
+
+            const cabGeo = new THREE.BoxGeometry(1.5, 0.6, 2);
+            const cabMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.1 });
+            const cab = new THREE.Mesh(cabGeo, cabMat);
+            cab.position.set(0, 1.05, -0.2);
+            cab.castShadow = true;
+            group.add(cab);
+
+            // Simple wheels
+            const wheelGeo = new THREE.CylinderGeometry(0.4, 0.4, 0.3, 16);
+            wheelGeo.rotateZ(Math.PI / 2);
+            const wheelMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+            [[-1.1, 0.4, 1.2], [1.1, 0.4, 1.2], [-1.1, 0.4, -1.2], [1.1, 0.4, -1.2]].forEach(pos => {
+                const w = new THREE.Mesh(wheelGeo, wheelMat);
+                w.position.set(...pos);
+                group.add(w);
+            });
+            return group;
+        }
+
+        function applyColorToModel(model, colorHex) {
+            const clone = model.clone();
+            clone.traverse(child => {
+                if (child.isMesh) {
+                    child.material = new THREE.MeshStandardMaterial({ 
+                        color: colorHex, roughness: 0.3, metalness: 0.7 
+                    });
+                    child.castShadow = true;
+                    child.receiveShadow = true;
+                }
+            });
+            return clone;
+        }
+
+        async function preloadCarModel(callback) {
+            try {
+                // User provided raw ZIP URL for the 25-mustang-13.04.2021-obj.zip
+                const zipUrl = 'https://raw.githubusercontent.com/endloki17-svg/main/main/25-mustang-13.04.2021-obj.zip';
+                
+                const response = await fetch(zipUrl);
+                if (!response.ok) throw new Error(`HTTP error: ${response.status}`);
+                
+                const buffer = await response.arrayBuffer();
+                // Extract using fflate
+                const unzipped = fflate.unzipSync(new Uint8Array(buffer));
+                
+                let objData = null;
+                for (const filename in unzipped) {
+                    if (filename.toLowerCase().endsWith('.obj')) {
+                        objData = unzipped[filename];
+                        break;
+                    }
+                }
+                
+                if (!objData) throw new Error("No .obj inside zip");
+                
+                const objText = new TextDecoder('utf-8').decode(objData);
+                const loader = new THREE.OBJLoader();
+                const object = loader.parse(objText);
+                
+                // Adjust scale/orientation depending on the raw model data
+                object.scale.set(0.02, 0.02, 0.02);
+                object.rotation.y = Math.PI; // often models face +Z, three.js forward is -Z
+
+                loadedBaseCarModel = object;
+                console.log("Zip/OBJ loaded successfully!");
+            } catch (err) {
+                console.warn('Failed to load ZIP, using fallback car.', err);
+                loadedBaseCarModel = null;
+            } finally {
+                callback();
+            }
+        }
+
+        function createCar(colorHex) {
+            return loadedBaseCarModel ? applyColorToModel(loadedBaseCarModel, colorHex) : buildFallbackCar(colorHex);
+        }
+
+        // =========================================================================
+        // Input Management (NippleJS & Keyboard)
+        // =========================================================================
+        
+        window.addEventListener('keydown', (e) => {
+            if(keys.hasOwnProperty(e.key)) keys[e.key] = true;
+        });
+        window.addEventListener('keyup', (e) => {
+            if(keys.hasOwnProperty(e.key)) keys[e.key] = false;
+        });
+
+        // Initialize Virtual Joystick
+        let joystickManager = null;
+        function initJoystick() {
+            if (joystickManager) return;
+            joystickManager = nipplejs.create({
+                zone: document.getElementById('joystick-zone'),
+                mode: 'static',
+                position: { left: '75px', bottom: '75px' },
+                color: 'white',
+                size: 120
+            });
+
+            joystickManager.on('move', (evt, data) => {
+                // Math: map angle/distance to X/Y axes
+                const force = Math.min(data.force, 1); 
+                inputX = Math.cos(data.angle.radian) * force;
+                inputY = Math.sin(data.angle.radian) * force;
+            });
+
+            joystickManager.on('end', () => {
+                inputX = 0;
+                inputY = 0;
+            });
+        }
+
+        // Aggregate inputs per frame
+        function processInputs() {
+            // Keyboard overrides joystick if pressed
+            let kX = 0, kY = 0;
+            if (keys.w || keys.ArrowUp) kY = 1;
+            if (keys.s || keys.ArrowDown) kY = -1;
+            if (keys.a || keys.ArrowLeft) kX = -1;
+            if (keys.d || keys.ArrowRight) kX = 1;
+
+            if (kX !== 0 || kY !== 0) {
+                inputX = kX;
+                inputY = kY;
+            }
+        }
+
+        // =========================================================================
+        // Game Logic Loop & Physics
+        // =========================================================================
+        
+        function formatTime(ms) {
+            let totalSeconds = Math.floor(ms / 1000);
+            let minutes = Math.floor(totalSeconds / 60);
+            let seconds = totalSeconds % 60;
+            let tenths = Math.floor((ms % 1000) / 100);
+            return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}.${tenths}`;
+        }
+
+        function updateRacingSystems() {
+            // Update Timer
+            const now = Date.now();
+            const elapsed = now - startTime;
+            document.getElementById('time-display').textContent = formatTime(elapsed);
+
+            // Map UI Speed (Km/h approx)
+            const speedKmh = Math.abs(Math.round(carPhysics.velocity * 150));
+            document.getElementById('speed-display').textContent = speedKmh;
+
+            // Lap Detection Logic
+            if (!myCar) return;
+            const x = myCar.position.x;
+            const z = myCar.position.z;
+
+            // Check if passing Checkpoint (left straightaway X approx -146)
+            if (x > checkpointXMin && x < checkpointXMax && Math.abs(z) < 20) {
+                passedCheckpoint = true;
+            }
+
+            // Check if passing Start/Finish (right straightaway X approx 146)
+            // Forward direction is driving negative Z to positive Z on the right side usually,
+            // or vice versa depending on orientation. Let's trigger if crossing Z=0
+            if (passedCheckpoint && x > finishLineXMin && x < finishLineXMax) {
+                // Did we cross Z=0 plane?
+                if ((lastCarZ > 0 && z <= 0) || (lastCarZ < 0 && z >= 0)) {
+                    // Lap complete!
+                    currentLap++;
+                    passedCheckpoint = false; // Reset for next lap
+                    
+                    if (currentLap > totalLaps) {
+                        // Race Finished
+                        gameState = 'finished';
+                        document.getElementById('lap-notification').textContent = "RACE FINISHED!";
+                        document.getElementById('lap-notification').classList.remove('opacity-0');
+                    } else {
+                        document.getElementById('lap-display').textContent = `${currentLap} / ${totalLaps}`;
+                        
+                        // Flash notification
+                        const notif = document.getElementById('lap-notification');
+                        notif.classList.remove('opacity-0');
+                        setTimeout(() => notif.classList.add('opacity-0'), 2000);
+                    }
+                }
+            }
+            lastCarZ = z;
+        }
+
+        function updateMyCar() {
+            if (!myCar || gameState !== 'playing') return;
+
+            processInputs();
+
+            // 1. Acceleration / Braking
+            if (inputY > 0) {
+                carPhysics.velocity += carPhysics.acceleration * inputY;
+            } else if (inputY < 0) {
+                // If moving forward, inputY < 0 acts as brake. If stopped, it reverses.
+                carPhysics.velocity += carPhysics.braking * inputY;
+            }
+
+            // 2. Friction & Drag
+            carPhysics.velocity *= carPhysics.friction;
+            if (Math.abs(carPhysics.velocity) > carPhysics.maxSpeed * 0.8) {
+                carPhysics.velocity *= carPhysics.drag; 
+            }
+
+            // Hard clamp
+            carPhysics.velocity = Math.max(-carPhysics.maxSpeed * 0.4, Math.min(carPhysics.maxSpeed, carPhysics.velocity));
+
+            // 3. Steering (proportional to speed)
+            const speedFactor = Math.abs(carPhysics.velocity) / carPhysics.maxSpeed;
+            if (speedFactor > 0.05) {
+                // Reverse steering direction if reversing
+                const dir = carPhysics.velocity > 0 ? 1 : -1;
+                const activeTurnSpeed = carPhysics.turnSpeed * (1 - speedFactor * 0.3); // Less turn at high speed
+                
+                carPhysics.heading -= inputX * activeTurnSpeed * dir;
+            }
+
+            // 4. Apply Position & Rotation
+            myCar.rotation.y = carPhysics.heading;
+            
+            // Translate object forward (-Z is default forward in three.js)
+            // Note: Since we rotate the model Math.PI in loading sometimes, we rely on translateZ.
+            myCar.translateZ(-carPhysics.velocity);
+
+            // Camera follow (Smooth Chase Cam)
+            // Calculate a position behind and above the car
+            const relativeOffset = new THREE.Vector3(0, 4, 12);
+            const cameraTarget = relativeOffset.applyMatrix4(myCar.matrixWorld);
+            
+            camera.position.lerp(cameraTarget, 0.15); // Smooth interpolation
+            camera.lookAt(myCar.position.x, myCar.position.y + 1, myCar.position.z);
+
+            updateRacingSystems();
+            broadcastState();
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (gameState === 'playing') {
+                updateMyCar();
+            }
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        // Start render loop
+        animate();
+
+        // =========================================================================
+        // Multiplayer (PeerJS) Logic
+        // =========================================================================
+
+        function generateId() { return Math.floor(100 + Math.random() * 900).toString(); }
+
+        function initGame(isHost, targetRoomId = null) {
+            myColor = document.getElementById('car-color').value;
+            const ID_PREFIX = 'edudrive-race-v2-'; 
+            myRoomId = isHost ? generateId() : targetRoomId;
+
+            const status = document.getElementById('connection-status');
+            status.classList.remove('hidden');
+            status.textContent = 'Connecting to Server...';
+
+            const fullId = isHost ? ID_PREFIX + myRoomId : null;
+            peer = new Peer(fullId);
+
+            peer.on('open', (id) => {
+                if (isHost) {
+                    preloadAndStart();
+                } else {
+                    status.textContent = 'Joining Room...';
+                    const conn = peer.connect(ID_PREFIX + targetRoomId);
+                    setupConnection(conn);
+                    conn.on('open', () => {
+                        preloadAndStart();
+                        conn.send({ type: 'init', color: myColor });
+                    });
+                }
+            });
+
+            peer.on('connection', setupConnection);
+            peer.on('error', (err) => {
+                console.error(err);
+                status.textContent = 'Connection Error. Try again.';
+                status.classList.replace('text-blue-500', 'text-red-500');
+            });
+        }
+
+        function setupConnection(conn) {
+            connections.push(conn);
+            updatePlayerCount();
+
+            conn.on('data', (data) => {
+                if (data.type === 'init') {
+                    createRemotePlayer(conn.peer, data.color);
+                    conn.send({ type: 'init_reply', color: myColor });
+                } else if (data.type === 'init_reply') {
+                    createRemotePlayer(conn.peer, data.color);
+                } else if (data.type === 'update' && remotePlayers[conn.peer]) {
+                    // Linear interpolation could be added here for smoother remote cars
+                    remotePlayers[conn.peer].position.set(data.x, data.y, data.z);
+                    remotePlayers[conn.peer].rotation.y = data.ry;
+                }
+            });
+
+            conn.on('close', () => {
+                if (remotePlayers[conn.peer]) {
+                    scene.remove(remotePlayers[conn.peer]);
+                    delete remotePlayers[conn.peer];
+                }
+                connections = connections.filter(c => c !== conn);
+                updatePlayerCount();
+            });
+        }
+
+        function broadcastState() {
+            if (!myCar || connections.length === 0) return;
+            const data = { type: 'update', x: myCar.position.x, y: myCar.position.y, z: myCar.position.z, ry: myCar.rotation.y };
+            connections.forEach(c => { if (c.open) c.send(data); });
+        }
+
+        function createRemotePlayer(peerId, colorHex) {
+            if (remotePlayers[peerId]) return; 
+            const rCar = createCar(colorHex);
+            scene.add(rCar);
+            remotePlayers[peerId] = rCar;
+        }
+
+        function updatePlayerCount() {
+            const el = document.getElementById('player-count');
+            if(el) el.textContent = `Players: ${connections.length + 1}`;
+        }
+
+        // =========================================================================
+        // UI Flow
+        // =========================================================================
+
+        function preloadAndStart() {
+            const status = document.getElementById('connection-status');
+            status.textContent = 'Downloading ZIP & Models...';
+            
+            preloadCarModel(() => {
+                startGame();
+            });
+        }
+
+        function startGame() {
+            document.getElementById('ui-container').classList.add('opacity-0');
+            setTimeout(() => document.getElementById('ui-container').classList.add('hidden'), 500);
+            
+            document.getElementById('hud').classList.remove('hidden');
+            document.getElementById('display-room-code').textContent = myRoomId;
+            updatePlayerCount();
+
+            // Instantiate local car at Start Line (Right straightaway, behind Z=0)
+            myCar = createCar(myColor);
+            const startOffsetX = (Math.random() - 0.5) * 10;
+            const startOffsetZ = 30 + Math.random() * 20; // Start behind finish line
+            
+            myCar.position.set(146 + startOffsetX, 0, startOffsetZ);
+            carPhysics.heading = 0; // Facing negative Z
+            myCar.rotation.y = carPhysics.heading;
+            scene.add(myCar);
+
+            initJoystick();
+
+            gameState = 'playing';
+            startTime = Date.now();
+        }
+
+        // UI Bindings
+        document.getElementById('btn-create').addEventListener('click', () => initGame(true));
+        
+        document.getElementById('btn-join').addEventListener('click', () => {
+            const code = document.getElementById('join-code').value.trim();
+            if (code.length === 3) initGame(false, code);
+            else {
+                const status = document.getElementById('connection-status');
+                status.textContent = 'Enter a valid 3-digit code';
+                status.classList.remove('hidden');
+                status.classList.replace('text-blue-500', 'text-red-500');
+            }
+        });
+
+    </script>
+</body>
+</html>
